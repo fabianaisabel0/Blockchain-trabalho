@@ -34,7 +34,7 @@ import { cn } from './lib/utils';
 import { NAV_ITEMS, Screen } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { createClient, User } from '@supabase/supabase-js';
-import { supabase } from './supabase';
+import { supabase, isSupabaseConfigured } from './supabase';
 
 // --- Types & Constants ---
 
@@ -1347,52 +1347,85 @@ function AppContent() {
   const [userRole, setUserRole] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState(false);
 
-  useEffect(() => {
-    const checkUser = async () => {
-      // Check for mock user first
-      const mockUserStr = localStorage.getItem('sb-mock-user');
-      if (mockUserStr) {
-        const mockUser = JSON.parse(mockUserStr);
-        setUser(mockUser);
-        setUserRole('admin');
-        setAuthReady(true);
-        return;
-      }
+  if (!isSupabaseConfigured) {
+    return (
+      <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-8">
+        <div className="max-w-md w-full bg-zinc-900 border-2 border-red-700 p-8 text-center shadow-[0_0_50px_rgba(185,28,28,0.2)]">
+          <Terminal className="text-red-700 w-16 h-16 mx-auto mb-6" />
+          <h1 className="font-headline text-2xl font-black uppercase tracking-tighter text-white mb-4">Configuration Required</h1>
+          <p className="text-zinc-400 text-sm mb-6 leading-relaxed uppercase tracking-widest font-bold">
+            Supabase environment variables are missing. Please set <code className="text-red-500">VITE_SUPABASE_URL</code> and <code className="text-red-500">VITE_SUPABASE_ANON_KEY</code> in your project settings.
+          </p>
+          <div className="bg-zinc-800 p-4 text-[10px] text-zinc-500 font-mono text-left break-all border border-zinc-700">
+            ERROR_CODE: CFG_MISSING_SUPABASE<br/>
+            NODE_STATUS: OFFLINE<br/>
+            PROTOCOL: HALTED
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-      const { data: { session } } = await supabase.auth.getSession();
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        fetchUserRole(session.user.id);
-      }
+  useEffect(() => {
+    // Safety timeout to ensure app always loads
+    const timer = setTimeout(() => {
       setAuthReady(true);
+    }, 5000);
+
+    const checkUser = async () => {
+      try {
+        const mockUserStr = localStorage.getItem('sb-mock-user');
+        if (mockUserStr) {
+          const mockUser = JSON.parse(mockUserStr);
+          setUser(mockUser);
+          setUserRole('admin');
+          setAuthReady(true);
+          return;
+        }
+
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
+        
+        const currentUser = session?.user ?? null;
+        setUser(currentUser);
+        if (currentUser) {
+          await fetchUserRole(currentUser.id);
+        }
+      } catch (error) {
+        console.error("Auth check failed:", error);
+      } finally {
+        setAuthReady(true);
+        clearTimeout(timer);
+      }
     };
 
     checkUser();
 
-    // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      // If we have a mock user, don't let Supabase auth override it unless it's a real sign out
       if (localStorage.getItem('sb-mock-user') && _event !== 'SIGNED_OUT') {
         return;
       }
 
       const currentUser = session?.user ?? null;
       setUser(currentUser);
+      
       if (currentUser) {
         await fetchUserRole(currentUser.id);
+        setActiveScreen(prev => prev === 'login' ? 'dashboard' : prev);
       } else {
         setUserRole(null);
+        if (!localStorage.getItem('sb-mock-user')) {
+          setActiveScreen('login');
+        }
       }
       setAuthReady(true);
-      if (!currentUser && !localStorage.getItem('sb-mock-user')) {
-        setActiveScreen('login');
-      } else if (currentUser && activeScreen === 'login') {
-        setActiveScreen('dashboard');
-      }
     });
 
-    return () => subscription.unsubscribe();
-  }, [activeScreen]);
+    return () => {
+      subscription.unsubscribe();
+      clearTimeout(timer);
+    };
+  }, []);
 
   const fetchUserRole = async (userId: string) => {
     try {
