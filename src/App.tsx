@@ -1360,8 +1360,13 @@ function AppContent() {
       if (data) {
         setUserRole(data.role);
       } else {
-        // Fallback or initial role
-        setUserRole('user');
+        // Fallback for the owner or initial setup
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user?.email === 'fabianaisabel0@gmail.com') {
+          setUserRole('admin');
+        } else {
+          setUserRole('user');
+        }
       }
     } catch (error) {
       console.error("Error fetching user role:", error);
