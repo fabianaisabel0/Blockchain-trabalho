@@ -25,12 +25,66 @@ import {
   X,
   LogIn,
   LogOut,
-  Lock
+  Lock,
+  ShieldAlert
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { NAV_ITEMS, Screen } from './types';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, User, syncUserProfile, db, doc, getDoc, collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, addDoc, serverTimestamp } from './firebase';
+
+// --- Types & Constants ---
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
+
+const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 // --- Components ---
 
@@ -534,7 +588,7 @@ const AdminArea = () => {
       setUsers(usersData);
       setLoading(false);
     }, (error) => {
-      console.error("Error fetching users:", error);
+      handleFirestoreError(error, OperationType.LIST, 'users');
       setLoading(false);
     });
     return () => unsubscribe();
@@ -543,8 +597,9 @@ const AdminArea = () => {
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUser.displayName || !newUser.email) return;
+    const path = 'users';
     try {
-      const userRef = collection(db, 'users');
+      const userRef = collection(db, path);
       await addDoc(userRef, {
         ...newUser,
         createdAt: serverTimestamp(),
@@ -553,29 +608,28 @@ const AdminArea = () => {
       setNewUser({ displayName: '', email: '', role: 'user' });
       setIsCreating(false);
     } catch (error) {
-      console.error("Error creating user:", error);
-      alert("Failed to create user.");
+      handleFirestoreError(error, OperationType.CREATE, path);
     }
   };
 
   const handleUpdateRole = async (userId: string, newRole: string) => {
+    const path = `users/${userId}`;
     try {
       const userRef = doc(db, 'users', userId);
       await updateDoc(userRef, { role: newRole });
       setEditingUser(null);
     } catch (error) {
-      console.error("Error updating role:", error);
-      alert("Failed to update role. Check permissions.");
+      handleFirestoreError(error, OperationType.UPDATE, path);
     }
   };
 
   const handleDeleteUser = async (userId: string) => {
     if (!window.confirm("Are you sure you want to delete this user? This action is irreversible on the ledger.")) return;
+    const path = `users/${userId}`;
     try {
       await deleteDoc(doc(db, 'users', userId));
     } catch (error) {
-      console.error("Error deleting user:", error);
-      alert("Failed to delete user.");
+      handleFirestoreError(error, OperationType.DELETE, path);
     }
   };
 
@@ -957,9 +1011,76 @@ const Settings = ({ user, userRole }: { user: User | null, userRole: string | nu
   );
 };
 
+// --- Error Boundary ---
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: any }> {
+  state: { hasError: boolean, error: any };
+  props: { children: React.ReactNode };
+
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+    this.props = props;
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      let errorMessage = "An unexpected system failure has occurred.";
+      try {
+        const parsedError = JSON.parse(this.state.error.message);
+        if (parsedError.error) {
+          errorMessage = `Security Protocol Violation: ${parsedError.error}`;
+        }
+      } catch (e) {
+        errorMessage = this.state.error.message || errorMessage;
+      }
+
+      return (
+        <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-6">
+          <div className="max-w-md w-full bg-white border-4 border-red-700 p-8 shadow-[12px_12px_0px_0px_rgba(185,28,28,0.2)]">
+            <div className="flex items-center gap-4 mb-6">
+              <ShieldAlert className="text-red-700 w-12 h-12" />
+              <h1 className="text-3xl font-black font-headline uppercase tracking-tighter text-red-700">System Error</h1>
+            </div>
+            <div className="bg-zinc-100 p-4 border-l-4 border-zinc-400 mb-8">
+              <p className="text-xs font-mono text-zinc-600 leading-relaxed uppercase">
+                {errorMessage}
+              </p>
+            </div>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full bg-zinc-900 text-white p-4 font-headline font-bold uppercase tracking-widest hover:bg-red-700 transition-colors"
+            >
+              Reboot Terminal
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 // --- Main App ---
 
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
+  );
+}
+
+function AppContent() {
   const [activeScreen, setActiveScreen] = useState<Screen>('dashboard');
   const [user, setUser] = useState<User | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
