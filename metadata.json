@@ -1,0 +1,5 @@
+{
+  "name": "Industrial Integrity Terminal",
+  "description": "A high-security industrial dashboard for blockchain-verified fuel logistics and system monitoring, featuring secure Google authentication and role-based access control.",
+  "requestFramePermissions": []
+}
