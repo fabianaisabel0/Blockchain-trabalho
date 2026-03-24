@@ -26,12 +26,14 @@ import {
   LogIn,
   LogOut,
   Lock,
-  ShieldAlert
+  ShieldAlert,
+  Mail,
+  Key
 } from 'lucide-react';
 import { cn } from './lib/utils';
 import { NAV_ITEMS, Screen } from './types';
 import { motion, AnimatePresence } from 'motion/react';
-import { auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, User, syncUserProfile, db, doc, getDoc, collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, addDoc, serverTimestamp } from './firebase';
+import { supabase } from './supabase';
 
 // --- Types & Constants ---
 
@@ -63,32 +65,14 @@ interface FirestoreErrorInfo {
   }
 }
 
-const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData.map(provider => ({
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        email: provider.email,
-        photoUrl: provider.photoURL
-      })) || []
-    },
-    operationType,
-    path
-  }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+const handleSupabaseError = (error: any, operationType: string, path: string | null) => {
+  console.error(`Supabase Error [${operationType}] on ${path}:`, error);
+  throw error;
 }
 
 // --- Components ---
 
-const TopBar = ({ user, onNavigate }: { user: User | null, onNavigate: (s: Screen) => void }) => {
+const TopBar = ({ user, onNavigate }: { user: any | null, onNavigate: (s: Screen) => void }) => {
   return (
     <header className="fixed top-0 left-0 w-full z-50 flex justify-between items-center px-6 h-16 bg-white border-b-2 border-zinc-200">
       <div className="flex items-center gap-8">
@@ -127,8 +111,8 @@ const TopBar = ({ user, onNavigate }: { user: User | null, onNavigate: (s: Scree
         {user && (
           <div className="h-8 w-8 bg-zinc-200 overflow-hidden border border-zinc-300">
             <img 
-              alt={user.displayName || "User profile"} 
-              src={user.photoURL || "https://www.gravatar.com/avatar/00000000000000000000000000000000?d=mp&f=y"}
+              alt={user.user_metadata?.full_name || "User profile"} 
+              src={user.user_metadata?.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.id}`}
               referrerPolicy="no-referrer"
             />
           </div>
@@ -138,14 +122,14 @@ const TopBar = ({ user, onNavigate }: { user: User | null, onNavigate: (s: Scree
   );
 };
 
-const Sidebar = ({ activeScreen, onNavigate, user }: { activeScreen: Screen, onNavigate: (s: Screen) => void, user: User | null }) => {
+const Sidebar = ({ activeScreen, onNavigate, user }: { activeScreen: Screen, onNavigate: (s: Screen) => void, user: any | null }) => {
   const IconMap: Record<string, any> = {
     LayoutDashboard, Database, Truck, Fuel, Users, ShieldCheck, BarChart3, BellRing, Shield
   };
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      await supabase.auth.signOut();
     } catch (error) {
       console.error("Logout error:", error);
     }
@@ -367,6 +351,36 @@ const Dashboard = () => {
 };
 
 const Blockchain = () => {
+  const [ledger, setLedger] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchLedger = async () => {
+      const { data, error } = await supabase
+        .from('ledger')
+        .select('*')
+        .order('created_at', { ascending: false });
+      
+      if (error) {
+        handleSupabaseError(error, 'LIST', 'ledger');
+      } else {
+        setLedger(data || []);
+      }
+      setLoading(false);
+    };
+
+    fetchLedger();
+
+    const subscription = supabase
+      .channel('public:ledger')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ledger' }, () => fetchLedger())
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(subscription);
+    };
+  }, []);
+
   return (
     <div className="animate-in slide-in-from-bottom-4 duration-500">
       <header className="mb-12 flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
@@ -405,39 +419,40 @@ const Blockchain = () => {
       <div className="relative py-12">
         <div className="absolute left-1/2 top-0 bottom-0 w-[2px] bg-zinc-300 -translate-x-1/2 hidden lg:block"></div>
         <div className="space-y-24 relative">
-          {[
-            { step: '01', label: 'Origin', title: 'North Sea Refinery A', batch: 'BATCH_7721_PRIME', date: '2023-11-20 08:45 UTC', loc: '58.6433° N, 1.3456° E', hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', color: 'primary' },
-            { step: '02', label: 'Refining', title: 'EuroHub Terminal 04', batch: 'REFINED_998_SEC', date: '2023-11-21 14:12 UTC', loc: 'Rotterdam, Netherlands', hash: 'a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3', color: 'tertiary', reverse: true },
-          ].map((node, i) => (
-            <div key={i} className={cn("flex flex-col lg:flex-row items-center justify-center gap-12 group", node.reverse && "lg:flex-row-reverse")}>
+          {ledger.length > 0 ? ledger.map((node, i) => (
+            <div key={node.id} className={cn("flex flex-col lg:flex-row items-center justify-center gap-12 group", i % 2 !== 0 && "lg:flex-row-reverse")}>
               <div className="w-full lg:w-1/2 flex justify-end">
                 <div className="bg-white p-8 w-full max-w-md border border-zinc-200 relative">
-                  <span className={cn("font-label text-[10px] font-bold uppercase tracking-widest mb-4 block", `text-${node.color}`)}>Step {node.step}: {node.label}</span>
-                  <h3 className="font-headline text-2xl font-bold uppercase mb-4">{node.title}</h3>
+                  <span className={cn("font-label text-[10px] font-bold uppercase tracking-widest mb-4 block text-primary")}>Step {ledger.length - i}: {node.action}</span>
+                  <h3 className="font-headline text-2xl font-bold uppercase mb-4">{node.entity_type}</h3>
                   <div className="space-y-3 font-body text-sm">
                     <div className="flex justify-between border-b border-zinc-100 pb-2">
-                      <span className="text-zinc-500 font-medium">Batch ID:</span>
-                      <span className="font-mono text-xs font-bold">{node.batch}</span>
+                      <span className="text-zinc-500 font-medium">Entity ID:</span>
+                      <span className="font-mono text-xs font-bold">{node.entity_id}</span>
                     </div>
                     <div className="flex justify-between border-b border-zinc-100 pb-2">
                       <span className="text-zinc-500 font-medium">Date:</span>
-                      <span className="font-mono text-xs font-bold">{node.date}</span>
+                      <span className="font-mono text-xs font-bold">{new Date(node.created_at).toLocaleString()}</span>
                     </div>
                     <div className="mt-6 pt-4 border-t-2 border-zinc-100">
                       <span className="text-[10px] font-bold uppercase tracking-tighter text-zinc-400 block mb-1">SHA-256 Hash</span>
-                      <span className={cn("font-mono text-[11px] break-all p-2 block border-l-2", `border-${node.color} bg-zinc-50`)}>{node.hash}</span>
+                      <span className={cn("font-mono text-[11px] break-all p-2 block border-l-2 border-primary bg-zinc-50")}>{node.hash || 'PENDING_VERIFICATION'}</span>
                     </div>
                   </div>
                 </div>
               </div>
               <div className="relative z-10">
-                <div className={cn("w-12 h-12 bg-white border-4 flex items-center justify-center", `border-${node.color}`)}>
-                  <CheckCircle2 className={cn("w-6 h-6", `text-${node.color}`)} />
+                <div className={cn("w-12 h-12 bg-white border-4 flex items-center justify-center border-primary")}>
+                  <CheckCircle2 className={cn("w-6 h-6 text-primary")} />
                 </div>
               </div>
               <div className="w-full lg:w-1/2"></div>
             </div>
-          ))}
+          )) : (
+            <div className="text-center py-20 text-zinc-400 font-headline uppercase tracking-widest">
+              No blockchain records found.
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -445,6 +460,36 @@ const Blockchain = () => {
 };
 
 const Personnel = () => {
+  const [personnel, setPersonnel] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchPersonnel = async () => {
+      const { data, error } = await supabase
+        .from('personnel')
+        .select('*')
+        .order('name', { ascending: true });
+      
+      if (error) {
+        handleSupabaseError(error, 'LIST', 'personnel');
+      } else {
+        setPersonnel(data || []);
+      }
+      setLoading(false);
+    };
+
+    fetchPersonnel();
+
+    const subscription = supabase
+      .channel('public:personnel')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'personnel' }, () => fetchPersonnel())
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(subscription);
+    };
+  }, []);
+
   return (
     <div className="animate-in fade-in duration-500">
       <header className="mb-12 flex flex-col lg:flex-row lg:items-end justify-between gap-6">
@@ -455,7 +500,7 @@ const Personnel = () => {
         <div className="flex gap-4">
           <div className="bg-white px-6 py-4 border-l-4 border-primary shadow-sm">
             <span className="block text-[10px] font-bold uppercase text-zinc-500 mb-1">Total Active Nodes</span>
-            <span className="text-3xl font-black font-headline leading-none">1,284</span>
+            <span className="text-3xl font-black font-headline leading-none">{personnel.length}</span>
           </div>
           <div className="bg-white px-6 py-4 border-l-4 border-tertiary shadow-sm">
             <span className="block text-[10px] font-bold uppercase text-zinc-500 mb-1">Security Clearance</span>
@@ -493,82 +538,87 @@ const Personnel = () => {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
-        <div className="xl:col-span-1 bg-white p-6 flex flex-col gap-6 border border-zinc-200">
-          <div className="aspect-square bg-zinc-200 relative overflow-hidden group">
-            <img 
-              alt="Marcus Thorne" 
-              className="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-500" 
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuCZI008lr_592gy6wTTb7bv5b8T5NGJPL_MFO0fazUWMJxfcVZl_vj6NNrQqTrD6dB2PtQpgS1gG6C-Iui5VqYqFHQbrmEQhUm93Dg8P3naV2_oWZVZmryOp0VNoA1DukZEK9TL_-4wTOyB9w9E8-s_PQUQ2CQ0yKZ4bgKkw6M1iRwNb_MBhczhw_-l6e_WUFs5Zk82snQ5cSOIH0yqagZ7S54bqryL9lEZ7vt5boNpQKuKdtlLLKM-G_k8K8PeWx3gYSsCFVFCJDdh"
-              referrerPolicy="no-referrer"
-            />
-            <div className="absolute bottom-0 left-0 w-full p-4 bg-primary text-white">
-              <h2 className="font-headline font-black uppercase text-xl leading-tight">Marcus Thorne</h2>
-              <p className="text-[10px] font-bold uppercase opacity-80">System Overseer | ID: #9921-X</p>
-            </div>
-          </div>
-          <div className="space-y-4">
-            <div className="p-4 bg-zinc-50 border border-zinc-100">
-              <span className="block text-[10px] font-bold uppercase text-zinc-400 mb-2">Access Level</span>
-              <div className="flex items-center gap-2">
-                <div className="flex-1 h-2 bg-zinc-200 overflow-hidden">
-                  <div className="h-full bg-primary w-[85%]"></div>
+        {personnel.length > 0 ? (
+          <>
+            <div className="xl:col-span-1 bg-white p-6 flex flex-col gap-6 border border-zinc-200">
+              <div className="aspect-square bg-zinc-200 relative overflow-hidden group">
+                <img 
+                  alt={personnel[0].name} 
+                  className="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-500" 
+                  src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${personnel[0].name}`}
+                  referrerPolicy="no-referrer"
+                />
+                <div className="absolute bottom-0 left-0 w-full p-4 bg-primary text-white">
+                  <h2 className="font-headline font-black uppercase text-xl leading-tight">{personnel[0].name}</h2>
+                  <p className="text-[10px] font-bold uppercase opacity-80">{personnel[0].role} | ID: #{personnel[0].id.slice(0,6)}</p>
                 </div>
-                <span className="text-xs font-black">LVL 08</span>
               </div>
-            </div>
-            <div className="p-4 bg-zinc-50 border border-zinc-100 space-y-3">
-              <div>
-                <span className="block text-[10px] font-bold uppercase text-zinc-400">Primary Hub</span>
-                <span className="text-sm font-bold uppercase">Houston Refinery Sector B</span>
-              </div>
-              <div>
-                <span className="block text-[10px] font-bold uppercase text-zinc-400">Join Date</span>
-                <span className="text-sm font-bold uppercase">OCT 14, 2021</span>
-              </div>
-            </div>
-          </div>
-          <button className="border-2 border-primary text-primary py-3 font-bold uppercase text-xs tracking-widest hover:bg-primary hover:text-white transition-all">
-            Edit Node Access
-          </button>
-        </div>
-
-        <div className="xl:col-span-3 space-y-4">
-          <div className="grid grid-cols-12 px-6 text-[10px] font-black uppercase text-zinc-400 tracking-widest">
-            <div className="col-span-4">Name & Identifier</div>
-            <div className="col-span-3">Role / Designation</div>
-            <div className="col-span-3">Hub Location</div>
-            <div className="col-span-2 text-right">Clearance</div>
-          </div>
-          {[
-            { name: 'Elena Rodriguez', id: 'REF-7721-A', role: 'Network Analyst', loc: 'Singapore North', lvl: 'LVL 04', img: 'https://lh3.googleusercontent.com/aida-public/AB6AXuAj1-f_fDR34c4Ifj0TnSeJvFfZYgF-7mBFy0U_DwdoQRh1sOwZSstt_i3EjRXI4__7-6wTlqs-9p86ZwSPTz6EdlGxJhRNZ-k6wgTsIK1H0iOQk0TBwJqo0DMoWcfEip8J8id_Del5bu6X2sgW_JLHRdFzEC8ZXrQF1q5su2MAGDW8GqXUeaJKQ_D4VwXsewYwXY3VGNZsHj5qVJL5pPOWO8kNZA_-FngLQO74yJu2veP_ntwGWtpX8jZ_wtKGGty1d80QocasZkId' },
-            { name: 'Chen Wei', id: 'LOG-0012-Q', role: 'Logistics Lead', loc: 'Rotterdam Port', lvl: 'LVL 06', img: 'https://lh3.googleusercontent.com/aida-public/AB6AXuAZvB9DvuTIa7V5_SCh2MCZUjMouiZy15w0cRWvse-qYIdxziwDoHW3f6z1pN_Lxodk-uTq6Yfxybv2P326fYhdnMU9uXnaOqPPXTHqXQIIIQVjDoGLt7YGQaGfTmAPdu3kxiUa13foryr-36PVoPQrW8EK-yGGcoIdSVkT9zOzeok64uqmIBgsKkRbaEQ9GxC-2RUwAP6pa0dpflQMbrT26Y4lmwCVw0zcnifzN2M2XZbn5MRbvyjUg7UdLx33dC4TfTwmNoNpfAUH' },
-          ].map((emp, i) => (
-            <div key={i} className="bg-white hover:bg-zinc-50 border-l-4 border-transparent hover:border-primary transition-all p-6 cursor-pointer border border-zinc-200">
-              <div className="grid grid-cols-12 items-center">
-                <div className="col-span-4 flex items-center gap-4">
-                  <div className="w-12 h-12 bg-zinc-200 overflow-hidden">
-                    <img alt={emp.name} className="w-full h-full object-cover" src={emp.img} referrerPolicy="no-referrer" />
+              <div className="space-y-4">
+                <div className="p-4 bg-zinc-50 border border-zinc-100">
+                  <span className="block text-[10px] font-bold uppercase text-zinc-400 mb-2">Access Level</span>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-2 bg-zinc-200 overflow-hidden">
+                      <div className="h-full bg-primary w-[85%]"></div>
+                    </div>
+                    <span className="text-xs font-black">LVL 08</span>
+                  </div>
+                </div>
+                <div className="p-4 bg-zinc-50 border border-zinc-100 space-y-3">
+                  <div>
+                    <span className="block text-[10px] font-bold uppercase text-zinc-400">Primary Hub</span>
+                    <span className="text-sm font-bold uppercase">{personnel[0].department}</span>
                   </div>
                   <div>
-                    <h4 className="font-bold text-sm uppercase">{emp.name}</h4>
-                    <span className="text-[10px] text-zinc-500 font-label">{emp.id}</span>
+                    <span className="block text-[10px] font-bold uppercase text-zinc-400">Join Date</span>
+                    <span className="text-sm font-bold uppercase">{new Date(personnel[0].joined_at).toLocaleDateString()}</span>
                   </div>
                 </div>
-                <div className="col-span-3">
-                  <span className="text-xs font-bold uppercase px-2 py-1 bg-zinc-100">
-                    {emp.role}
-                  </span>
-                </div>
-                <div className="col-span-3">
-                  <span className="text-xs font-medium text-zinc-600 uppercase">{emp.loc}</span>
-                </div>
-                <div className="col-span-2 text-right">
-                  <span className="text-xs font-black text-primary">{emp.lvl}</span>
-                </div>
               </div>
+              <button className="border-2 border-primary text-primary py-3 font-bold uppercase text-xs tracking-widest hover:bg-primary hover:text-white transition-all">
+                Edit Node Access
+              </button>
             </div>
-          ))}
-        </div>
+
+            <div className="xl:col-span-3 space-y-4">
+              <div className="grid grid-cols-12 px-6 text-[10px] font-black uppercase text-zinc-400 tracking-widest">
+                <div className="col-span-4">Name & Identifier</div>
+                <div className="col-span-3">Role / Designation</div>
+                <div className="col-span-3">Hub Location</div>
+                <div className="col-span-2 text-right">Clearance</div>
+              </div>
+              {personnel.map((emp, i) => (
+                <div key={emp.id} className="bg-white hover:bg-zinc-50 border-l-4 border-transparent hover:border-primary transition-all p-6 cursor-pointer border border-zinc-200">
+                  <div className="grid grid-cols-12 items-center">
+                    <div className="col-span-4 flex items-center gap-4">
+                      <div className="w-12 h-12 bg-zinc-200 overflow-hidden">
+                        <img alt={emp.name} className="w-full h-full object-cover" src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${emp.name}`} referrerPolicy="no-referrer" />
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-sm uppercase">{emp.name}</h4>
+                        <span className="text-[10px] text-zinc-500 font-label">#{emp.id.slice(0,8)}</span>
+                      </div>
+                    </div>
+                    <div className="col-span-3">
+                      <span className="text-xs font-bold uppercase px-2 py-1 bg-zinc-100">
+                        {emp.role}
+                      </span>
+                    </div>
+                    <div className="col-span-3">
+                      <span className="text-xs font-medium text-zinc-600 uppercase">{emp.department}</span>
+                    </div>
+                    <div className="col-span-2 text-right">
+                      <span className="text-xs font-black text-primary">LVL 0{Math.floor(Math.random() * 9) + 1}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <div className="xl:col-span-4 text-center py-20 bg-white border-2 border-dashed border-zinc-200 text-zinc-400 font-headline uppercase tracking-widest">
+            No personnel records found in database.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -582,54 +632,82 @@ const AdminArea = () => {
   const [newUser, setNewUser] = useState({ displayName: '', email: '', role: 'user' });
 
   useEffect(() => {
-    const q = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const usersData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setUsers(usersData);
+    const fetchUsers = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .order('created_at', { ascending: false });
+      
+      if (error) {
+        handleSupabaseError(error, 'LIST', 'users');
+      } else {
+        setUsers(data || []);
+      }
       setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'users');
-      setLoading(false);
-    });
-    return () => unsubscribe();
+    };
+
+    fetchUsers();
+
+    // Set up real-time subscription
+    const subscription = supabase
+      .channel('public:users')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, (payload) => {
+        fetchUsers();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(subscription);
+    };
   }, []);
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUser.displayName || !newUser.email) return;
-    const path = 'users';
     try {
-      const userRef = collection(db, path);
-      await addDoc(userRef, {
-        ...newUser,
-        createdAt: serverTimestamp(),
-        photoURL: `https://api.dicebear.com/7.x/avataaars/svg?seed=${newUser.displayName}`
-      });
+      const { error } = await supabase
+        .from('users')
+        .insert([{
+          id: crypto.randomUUID(), // Note: In a real app, users are created via Auth
+          display_name: newUser.displayName,
+          email: newUser.email,
+          role: newUser.role,
+          photo_url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${newUser.displayName}`
+        }]);
+      
+      if (error) throw error;
       setNewUser({ displayName: '', email: '', role: 'user' });
       setIsCreating(false);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, path);
+      handleSupabaseError(error, 'CREATE', 'users');
     }
   };
 
   const handleUpdateRole = async (userId: string, newRole: string) => {
-    const path = `users/${userId}`;
     try {
-      const userRef = doc(db, 'users', userId);
-      await updateDoc(userRef, { role: newRole });
+      const { error } = await supabase
+        .from('users')
+        .update({ role: newRole })
+        .eq('id', userId);
+      
+      if (error) throw error;
       setEditingUser(null);
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, path);
+      handleSupabaseError(error, 'UPDATE', `users/${userId}`);
     }
   };
 
   const handleDeleteUser = async (userId: string) => {
     if (!window.confirm("Are you sure you want to delete this user? This action is irreversible on the ledger.")) return;
-    const path = `users/${userId}`;
     try {
-      await deleteDoc(doc(db, 'users', userId));
+      const { error } = await supabase
+        .from('users')
+        .delete()
+        .eq('id', userId);
+      
+      if (error) throw error;
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, path);
+      handleSupabaseError(error, 'DELETE', `users/${userId}`);
     }
   };
 
@@ -836,14 +914,86 @@ const AdminArea = () => {
 
 const Login = () => {
   const [loading, setLoading] = useState(false);
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
-  const handleLogin = async () => {
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      if (isRegistering) {
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              full_name: displayName,
+            }
+          }
+        });
+        if (error) throw error;
+        setError("Registro realizado! Verifique seu e-mail para confirmar a conta.");
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
+        if (error) throw error;
+      }
+    } catch (err: any) {
+      console.error("Auth error:", err);
+      let message = "Falha na autenticação.";
+      if (err.message.includes('Invalid login credentials')) {
+        message = "E-mail ou senha incorretos.";
+      } else if (err.message.includes('Email not confirmed')) {
+        message = "E-mail não confirmado. Verifique sua caixa de entrada ou desative a confirmação no painel do Supabase.";
+      } else if (err.message) {
+        message = err.message;
+      }
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleLogin = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin
+        }
+      });
+      if (error) throw error;
+    } catch (err: any) {
+      console.error("Google Login error:", err);
+      setError(err.message || "Falha no login com Google.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    if (!email) {
+      setError("Por favor, insira seu e-mail para redefinir a senha.");
+      return;
+    }
     setLoading(true);
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      await syncUserProfile(result.user);
-    } catch (error) {
-      console.error("Login error:", error);
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+      if (error) throw error;
+      setError("E-mail de redefinição enviado! Verifique sua caixa de entrada.");
+    } catch (err: any) {
+      console.error("Reset error:", err);
+      setError("Erro ao enviar e-mail de redefinição.");
     } finally {
       setLoading(false);
     }
@@ -876,17 +1026,62 @@ const Login = () => {
           <p className="font-label text-[10px] uppercase tracking-[0.3em] text-zinc-500 mt-2">Secure Access Protocol V2.4</p>
         </div>
 
-        <div className="space-y-6">
-          <div className="p-4 bg-zinc-800/50 border border-zinc-700 flex items-start gap-4">
-            <ShieldCheck className="text-red-600 w-5 h-5 mt-0.5 shrink-0" />
-            <div>
-              <p className="font-headline text-xs font-bold uppercase text-white">Encrypted Authentication</p>
-              <p className="font-label text-[10px] text-zinc-400 mt-1">Access restricted to authorized personnel. All attempts are logged on the global ledger.</p>
+        <form onSubmit={handleAuth} className="space-y-4">
+          {isRegistering && (
+            <div className="space-y-1">
+              <label className="font-label text-[10px] uppercase font-bold text-zinc-500 ml-1">Nome Completo</label>
+              <div className="relative">
+                <Users className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 w-4 h-4" />
+                <input 
+                  type="text"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  placeholder="Seu Nome"
+                  className="w-full bg-zinc-800 border border-zinc-700 text-white p-3 pl-10 text-sm focus:outline-none focus:border-red-700 transition-colors"
+                  required={isRegistering}
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-1">
+            <label className="font-label text-[10px] uppercase font-bold text-zinc-500 ml-1">E-mail</label>
+            <div className="relative">
+              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 w-4 h-4" />
+              <input 
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="admin@integrity.sys"
+                className="w-full bg-zinc-800 border border-zinc-700 text-white p-3 pl-10 text-sm focus:outline-none focus:border-red-700 transition-colors"
+                required
+              />
             </div>
           </div>
 
+          <div className="space-y-1">
+            <label className="font-label text-[10px] uppercase font-bold text-zinc-500 ml-1">Senha</label>
+            <div className="relative">
+              <Key className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 w-4 h-4" />
+              <input 
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full bg-zinc-800 border border-zinc-700 text-white p-3 pl-10 text-sm focus:outline-none focus:border-red-700 transition-colors"
+                required
+              />
+            </div>
+          </div>
+
+          {error && (
+            <div className="p-3 bg-red-900/30 border border-red-700 text-red-500 text-[10px] uppercase font-bold text-center">
+              {error}
+            </div>
+          )}
+
           <button 
-            onClick={handleLogin}
+            type="submit"
             disabled={loading}
             className="w-full bg-red-700 hover:bg-red-600 text-white py-4 font-headline text-sm font-black uppercase tracking-widest transition-all flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed group"
           >
@@ -895,18 +1090,56 @@ const Login = () => {
             ) : (
               <>
                 <LogIn className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-                Authorize via Google
+                {isRegistering ? 'Criar Acesso' : 'Autorizar Acesso'}
               </>
             )}
           </button>
+        </form>
 
-          <div className="pt-6 border-t border-zinc-800 flex justify-between items-center">
-            <div className="flex items-center gap-2">
-              <Lock className="w-3 h-3 text-zinc-600" />
-              <span className="font-label text-[9px] uppercase font-bold text-zinc-600">AES-256 Verified</span>
-            </div>
-            <span className="font-label text-[9px] uppercase font-bold text-zinc-600">Node: 0x42...F3A</span>
+        <div className="mt-6 flex flex-col gap-3">
+          <button 
+            onClick={() => setIsRegistering(!isRegistering)}
+            className="font-label text-[10px] uppercase font-bold text-zinc-500 hover:text-white transition-colors text-center"
+          >
+            {isRegistering ? 'Já possui acesso? Entrar' : 'Não possui acesso? Solicitar Registro'}
+          </button>
+
+          {!isRegistering && (
+            <button 
+              onClick={handleForgotPassword}
+              className="font-label text-[10px] uppercase font-bold text-zinc-600 hover:text-red-500 transition-colors text-center"
+            >
+              Esqueceu a senha?
+            </button>
+          )}
+
+          <div className="relative flex items-center py-2">
+            <div className="flex-grow border-t border-zinc-800"></div>
+            <span className="flex-shrink mx-4 font-label text-[9px] uppercase font-bold text-zinc-600">Ou</span>
+            <div className="flex-grow border-t border-zinc-800"></div>
           </div>
+
+          <button 
+            onClick={handleGoogleLogin}
+            disabled={loading}
+            className="w-full bg-zinc-800 hover:bg-zinc-700 text-white py-3 font-headline text-xs font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-3 disabled:opacity-50"
+          >
+            <svg className="w-4 h-4" viewBox="0 0 24 24">
+              <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+              <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+              <path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
+              <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
+            </svg>
+            Google Auth
+          </button>
+        </div>
+
+        <div className="pt-6 mt-6 border-t border-zinc-800 flex justify-between items-center">
+          <div className="flex items-center gap-2">
+            <Lock className="w-3 h-3 text-zinc-600" />
+            <span className="font-label text-[9px] uppercase font-bold text-zinc-600">AES-256 Verified</span>
+          </div>
+          <span className="font-label text-[9px] uppercase font-bold text-zinc-600">Node: 0x42...F3A</span>
         </div>
       </motion.div>
     </div>
@@ -1082,22 +1315,26 @@ export default function App() {
 
 function AppContent() {
   const [activeScreen, setActiveScreen] = useState<Screen>('dashboard');
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<any | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState(false);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    // Check initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        fetchUserRole(session.user.id);
+      }
+      setAuthReady(true);
+    });
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const currentUser = session?.user ?? null;
       setUser(currentUser);
       if (currentUser) {
-        await syncUserProfile(currentUser);
-        const userRef = doc(db, 'users', currentUser.uid);
-        const userDoc = await getDoc(userRef);
-        if (userDoc.exists()) {
-          setUserRole(userDoc.data().role);
-        } else {
-          setUserRole(currentUser.email === 'fabianaisabel0@gmail.com' ? 'admin' : 'user');
-        }
+        await fetchUserRole(currentUser.id);
       } else {
         setUserRole(null);
       }
@@ -1108,8 +1345,28 @@ function AppContent() {
         setActiveScreen('dashboard');
       }
     });
-    return () => unsubscribe();
+
+    return () => subscription.unsubscribe();
   }, [activeScreen]);
+
+  const fetchUserRole = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', userId)
+        .single();
+      
+      if (data) {
+        setUserRole(data.role);
+      } else {
+        // Fallback or initial role
+        setUserRole('user');
+      }
+    } catch (error) {
+      console.error("Error fetching user role:", error);
+    }
+  };
 
   if (!authReady) {
     return (

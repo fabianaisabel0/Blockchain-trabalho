@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, sendPasswordResetEmail } from 'firebase/auth';
 import { getFirestore, doc, getDoc, setDoc, serverTimestamp, collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, addDoc } from 'firebase/firestore';
 
 // Import the Firebase configuration
@@ -11,7 +11,7 @@ export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
-export { signInWithPopup, signOut, onAuthStateChanged, serverTimestamp, doc, getDoc, setDoc, collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, addDoc };
+export { signInWithPopup, signOut, onAuthStateChanged, serverTimestamp, doc, getDoc, setDoc, collection, query, orderBy, onSnapshot, updateDoc, deleteDoc, addDoc, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, sendPasswordResetEmail };
 export type { User };
 
 // Helper to handle user profile in Firestore
@@ -23,9 +23,9 @@ export const syncUserProfile = async (user: User) => {
   if (!userDoc.exists()) {
     await setDoc(userRef, {
       uid: user.uid,
-      displayName: user.displayName,
+      displayName: user.displayName || user.email?.split('@')[0] || 'User',
       email: user.email,
-      photoURL: user.photoURL,
+      photoURL: user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`,
       role: isAdminEmail ? 'admin' : 'user',
       createdAt: serverTimestamp(),
     });
